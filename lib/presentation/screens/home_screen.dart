@@ -67,12 +67,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final result = await provider.classify(File(picked.path));
 
       if (!mounted) return;
+
       if (result != null) {
+        // Success — navigate to result screen
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => ResultScreen(result: result)),
         );
+      } else if (provider.classifyState == ClassifyState.rejected) {
+        // Rejected by image validator or inference guard — show bottom sheet
+        _showRejectionSheet(provider.rejectionMessage ?? 'Could not classify image.');
+        provider.resetClassify();
       } else if (provider.errorMessage != null) {
+        // Unexpected error — snackbar
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(provider.errorMessage!),
@@ -88,6 +95,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         );
       }
     }
+  }
+
+  void _showRejectionSheet(String message) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      // Allow the sheet to use up to 85% of screen height before scrolling
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.85,
+      ),
+      builder: (_) => _RejectionSheet(message: message),
+    );
   }
 
   @override
@@ -147,13 +167,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 _buildScanHero(context, isLoading, cs),
                 const SizedBox(height: 24),
 
-                // --- Action buttons ---
-                // FIX: Always keep this widget in the list at a stable index.
-                // Using AnimatedSize + a keyed child prevents the
-                // GlobalKey / TextStyle-lerp crash that occurs when the
-                // OutlinedButton.icon element is abruptly added/removed from
-                // the SliverChildListDelegate while its ink-renderer GlobalKey
-                // is still alive.
                 AnimatedSize(
                   duration: const Duration(milliseconds: 200),
                   curve: Curves.easeInOut,
@@ -188,7 +201,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       clipBehavior: Clip.antiAlias,
       child: Stack(
         children: [
-          // Background pattern
           Positioned.fill(
             child: CustomPaint(painter: _ForestPatternPainter()),
           ),
@@ -230,7 +242,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Running Model',
+                    'Analysing image quality then running model',
                     style: TextStyle(
                       color: Colors.white.withOpacity(0.6),
                       fontSize: 13,
@@ -319,11 +331,159 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Action buttons extracted into a proper StatelessWidget so Flutter can
-// track its identity via a stable key, and the OutlinedButton.icon ink-
-// renderer GlobalKey is never duplicated in the element tree.
-// ---------------------------------------------------------------------------
+// ── Rejection bottom sheet ────────────────────────────────────────────────────
+
+class _RejectionSheet extends StatelessWidget {
+  final String message;
+  const _RejectionSheet({required this.message});
+
+  // Pick icon based on message content
+  IconData get _icon {
+    if (message.contains('dark')) return Icons.brightness_low_rounded;
+    if (message.contains('overexposed') || message.contains('bright')) {
+      return Icons.brightness_high_rounded;
+    }
+    if (message.contains('blurry') || message.contains('blurred')) {
+      return Icons.blur_on_rounded;
+    }
+    if (message.contains('doesn\'t look like') || message.contains('not one of')) {
+      return Icons.search_off_rounded;
+    }
+    return Icons.warning_amber_rounded;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      // SingleChildScrollView prevents overflow on small screens.
+      // isScrollControlled + maxHeightFraction cap it at 85% screen height
+      // (set in _showRejectionSheet).
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle
+            Container(
+              width: 36,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: cs.onSurface.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: AppColors.error.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(_icon, size: 32, color: AppColors.error),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Image not accepted',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                fontFamily: 'SpaceGrotesk',
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14,
+                color: cs.onSurface.withOpacity(0.65),
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Tips
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.07),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Tips for a better photo',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                      color: AppColors.primary,
+                      fontFamily: 'SpaceGrotesk',
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  _Tip(icon: Icons.close_fullscreen_rounded, text: 'Get closer — focus on leaves, bark, or the trunk'),
+                  _Tip(icon: Icons.wb_sunny_outlined, text: 'Shoot in natural daylight, avoid harsh shadows'),
+                  _Tip(icon: Icons.center_focus_strong_outlined, text: 'Tap the screen to focus before capturing'),
+                  _Tip(icon: Icons.nature_rounded, text: 'One tree per photo works best'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Try again'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Tip extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _Tip({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 15, color: AppColors.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                height: 1.3,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Action buttons ────────────────────────────────────────────────────────────
 
 class _ActionButtons extends StatelessWidget {
   final VoidCallback onCamera;
@@ -338,7 +498,6 @@ class _ActionButtons extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      // Preserve the original bottom spacing that the removed SizedBox provided.
       padding: const EdgeInsets.only(bottom: 32),
       child: Row(
         children: [
@@ -354,9 +513,6 @@ class _ActionButtons extends StatelessWidget {
             child: OutlinedButton.icon(
               onPressed: onGallery,
               icon: const Icon(Icons.photo_library_rounded, size: 18),
-              // FIX: Explicitly set inherit: false with all required fields so
-              // that TextStyle.lerp never has to bridge an inherit mismatch
-              // between this style and the theme's fully-resolved labelLarge.
               style: OutlinedButton.styleFrom(
                 textStyle: const TextStyle(
                   inherit: false,
@@ -377,52 +533,7 @@ class _ActionButtons extends StatelessWidget {
   }
 }
 
-// ---- Supporting widgets ----
-
-class _StatCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color? accent;
-
-  const _StatCard({required this.label, required this.value, required this.icon, this.accent});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final color = accent ?? AppColors.textSecondary;
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: cs.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Theme.of(context).dividerColor),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, size: 18, color: color),
-            const SizedBox(height: 8),
-            Text(
-              value,
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: cs.onSurface,
-                letterSpacing: -0.5,
-              ),
-            ),
-            Text(
-              label,
-              style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+// ── Supporting widgets ────────────────────────────────────────────────────────
 
 class _RecentScanCard extends StatelessWidget {
   final dynamic scan;
@@ -506,7 +617,6 @@ class _RecentScanCard extends StatelessWidget {
   }
 }
 
-/// Simple leaf / tree dot pattern painted on canvas
 class _ForestPatternPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {

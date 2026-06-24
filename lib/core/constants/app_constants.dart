@@ -24,9 +24,22 @@ class AppConstants {
     'LOW':    '#718096',
   };
 
-  // Confidence thresholds
+  // ── Confidence thresholds ──────────────────────────────────────────────────
   static const double highConfidence   = 0.75;
   static const double mediumConfidence = 0.50;
+  // Below mediumConfidence = low confidence warning shown in result screen
+
+  // ── Inference guard thresholds ─────────────────────────────────────────────
+  //
+  // Entropy: Shannon entropy of the 8-class softmax output.
+  // Max possible = log2(8) = 3.0 (uniform distribution = totally lost).
+  // > 2.2 with low max score = model is genuinely confused, likely not a
+  // known species → soft non-tree guard triggers.
+  static const double entropyRejectionThreshold = 2.2;
+
+  // Top-2 gap: difference between #1 and #2 class scores.
+  // < 0.10 with low max score = model is torn between two species → ambiguous.
+  static const double top2GapThreshold = 0.10;
 
   // App info
   static const String appName = 'TreeLens';

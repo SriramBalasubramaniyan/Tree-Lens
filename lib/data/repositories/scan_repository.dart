@@ -9,6 +9,22 @@ import 'package:treelens/data/datasources/database_service.dart';
 import 'package:treelens/data/models/scan_result_model.dart';
 import 'package:treelens/data/repositories/species_repository.dart';
 
+/// Outcome returned by [ScanRepository.classifyAndSave].
+/// Either a [ScanResult] on success, or a rejection message.
+class ScanOutcome {
+  final ScanResult? result;
+  final String? rejectionMessage;
+
+  const ScanOutcome._({this.result, this.rejectionMessage});
+
+  factory ScanOutcome.success(ScanResult r) => ScanOutcome._(result: r);
+  factory ScanOutcome.rejected(String message) =>
+      ScanOutcome._(rejectionMessage: message);
+
+  bool get isSuccess => result != null;
+  bool get isRejected => rejectionMessage != null;
+}
+
 class ScanRepository {
   static ScanRepository? _instance;
   final _uuid = const Uuid();
@@ -19,21 +35,31 @@ class ScanRepository {
     return _instance!;
   }
 
-  /// Run inference on [imageFile] and persist the result. Returns a [ScanResult].
-  Future<ScanResult> classifyAndSave(File imageFile) async {
-    // 1. Copy image to app docs so it survives cache clears
-    final savedPath = await _persistImage(imageFile);
+  /// Run the full pipeline on [imageFile]:
+  ///   image validation → inference → guard check → persist (on success only)
+  ///
+  /// Returns [ScanOutcome] — caller checks [isRejected] before using [result].
+  /// Rejected images are NOT saved to history (no point logging bad inputs).
+  Future<ScanOutcome> classifyAndSave(File imageFile) async {
+    // 1. Run full classify pipeline (validation + inference + guard)
+    final classifyResult = await ClassifierService.instance.classify(imageFile);
 
-    // 2. Run inference
-    final predictions = await ClassifierService.instance.classify(imageFile);
+    // 2. If any rejection, surface the message without saving
+    if (classifyResult.isAnyRejection) {
+      return ScanOutcome.rejected(classifyResult.rejectionMessage);
+    }
+
+    // 3. Successful inference — look up species and persist
+    final predictions = classifyResult.predictions!;
     final top = predictions.first;
 
-    // 3. Lookup species details
     final species = await SpeciesRepository.instance.getByCode(top.speciesCode);
     if (species == null) throw Exception('Unknown species code: ${top.speciesCode}');
 
-    // 4. Build result
-    final result = ScanResult(
+    // Copy image to app docs so it survives cache clears
+    final savedPath = await _persistImage(imageFile);
+
+    final scanResult = ScanResult(
       id:          _uuid.v4(),
       imagePath:   savedPath,
       speciesCode: top.speciesCode,
@@ -43,9 +69,8 @@ class ScanRepository {
       scannedAt:   DateTime.now(),
     );
 
-    // 5. Persist to SQLite
-    await DatabaseService.instance.insertScan(result.toMap());
-    return result;
+    await DatabaseService.instance.insertScan(scanResult.toMap());
+    return ScanOutcome.success(scanResult);
   }
 
   /// Load all scan history from SQLite.
@@ -69,12 +94,12 @@ class ScanRepository {
   Future<void> clearHistory() =>
       DatabaseService.instance.deleteAllScans();
 
-  // Copy selected image into app's documents directory
   Future<String> _persistImage(File source) async {
     final dir = await getApplicationDocumentsDirectory();
     final scansDir = Directory(p.join(dir.path, 'scans'));
     await scansDir.create(recursive: true);
-    final dest = File(p.join(scansDir.path, '${_uuid.v4()}${p.extension(source.path)}'));
+    final dest = File(p.join(
+        scansDir.path, '${_uuid.v4()}${p.extension(source.path)}'));
     await source.copy(dest.path);
     return dest.path;
   }

@@ -6,7 +6,7 @@ import 'package:treelens/data/datasources/classifier_service.dart';
 import 'package:treelens/data/models/scan_result_model.dart';
 import 'package:treelens/data/repositories/scan_repository.dart';
 
-enum ClassifyState { idle, loading, success, error }
+enum ClassifyState { idle, loading, success, rejected, error }
 
 class AppProvider extends ChangeNotifier {
   // -- Theme
@@ -38,19 +38,33 @@ class AppProvider extends ChangeNotifier {
   String? _errorMessage;
   String? get errorMessage => _errorMessage;
 
+  // Rejection message (image quality or inference guard)
+  String? _rejectionMessage;
+  String? get rejectionMessage => _rejectionMessage;
+
   Future<ScanResult?> classify(File imageFile) async {
     _classifyState = ClassifyState.loading;
     _errorMessage = null;
+    _rejectionMessage = null;
     notifyListeners();
 
     try {
-      final result = await ScanRepository.instance.classifyAndSave(imageFile);
-      _lastResult = result;
+      final outcome = await ScanRepository.instance.classifyAndSave(imageFile);
+
+      if (outcome.isRejected) {
+        // Rejected by image validator or inference guard
+        _rejectionMessage = outcome.rejectionMessage;
+        _classifyState = ClassifyState.rejected;
+        notifyListeners();
+        return null;
+      }
+
+      // Success
+      _lastResult = outcome.result;
       _classifyState = ClassifyState.success;
-      // Refresh history
       await loadHistory();
       notifyListeners();
-      return result;
+      return outcome.result;
     } catch (e) {
       _errorMessage = e.toString().replaceFirst('Exception: ', '');
       _classifyState = ClassifyState.error;
@@ -63,6 +77,7 @@ class AppProvider extends ChangeNotifier {
     _classifyState = ClassifyState.idle;
     _lastResult = null;
     _errorMessage = null;
+    _rejectionMessage = null;
     notifyListeners();
   }
 
